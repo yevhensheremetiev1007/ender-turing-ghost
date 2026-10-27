@@ -1,0 +1,25 @@
+[project]
+name = "ghost-deploy"
+version = "0.1.0"
+description = "Render a locked-down first-boot bundle for Ghost on Ubuntu."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "pydantic>=2.7",
+  "pydantic-settings>=2.4",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+ghost-deploy = "ghost_deploy.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
