@@ -18,12 +18,18 @@ set -euo pipefail
 exit 0
 """
 
-_DANGEROUS_TUNNEL = (
-    re.compile(r"ufw\s+allow\b.*\b(?:22|openssh)\b", re.IGNORECASE),
-    re.compile(r"iptables\b.*\b22\b.*\bACCEPT\b", re.IGNORECASE),
-    re.compile(r"ListenAddress\s+(?:0\.0\.0\.0|::)"),
-    re.compile(r"PasswordAuthentication\s+yes", re.IGNORECASE),
-    re.compile(r"PermitRootLogin\s+(?:yes|without-password|prohibit-password)", re.IGNORECASE),
+_LISTEN_ANYWHERE = re.compile(r"ListenAddress\s+(?:0\.0\.0\.0|::)\b")
+_PASSWORD_YES = re.compile(r"PasswordAuthentication\s+yes\b", re.IGNORECASE)
+_ROOT_LOGIN = re.compile(
+    r"PermitRootLogin\s+(?:yes|without-password|prohibit-password)\b",
+    re.IGNORECASE,
+)
+_IPTABLES_22 = re.compile(r"iptables\b.*\b22\b.*\bACCEPT\b", re.IGNORECASE)
+_UFW_ALLOW = re.compile(r"ufw\s+allow\b", re.IGNORECASE)
+_PORT_22 = re.compile(r"\b(?:22|openssh)\b", re.IGNORECASE)
+_WG_SSH = re.compile(
+    r"ufw\s+allow\s+in\s+on\s+wg0\s+to\s+any\s+port\s+22\s+proto\s+tcp\s*$",
+    re.IGNORECASE,
 )
 
 _ALLOWED_CADDY_PORTS = {"80:80", "443:443", "443:443/udp"}
@@ -43,16 +49,23 @@ class Bundle:
 
 
 def render_bundle(config: DeployConfig, tunnel_script: str | None = None) -> Bundle:
-    script = DEFAULT_TUNNEL_SCRIPT if tunnel_script is None else tunnel_script
-    _reject_dangerous_tunnel(script)
+    from ghost_deploy.tunnels import build_tunnel
+
+    plan = build_tunnel(config, tunnel_script)
+    _reject_dangerous_tunnel(plan.script)
     files = {
         "docker-compose.yml": _compose(config),
         "Caddyfile": _caddyfile(config),
         "ghost.env": _env_file(config),
         "sshd-lockdown.conf": _sshd(config),
-        "tunnel-setup.sh": _ensure_trailing_newline(script.strip() + "\n"),
+        "tunnel-setup.sh": _ensure_trailing_newline(plan.script.strip() + "\n"),
         "bootstrap.sh": _bootstrap(config),
+        "connect.txt": _ensure_trailing_newline(plan.connect_hint.strip() + "\n"),
     }
+    for name, content in plan.local_files.items():
+        if name in files:
+            raise BundleError(f"tunnel file {name} collides with a bundle file")
+        files[name] = _ensure_trailing_newline(content.strip() + "\n")
     files["cloud-init.yaml"] = _cloud_init(config, files)
     bundle = Bundle(files)
     check_bundle(bundle, config)
@@ -79,6 +92,7 @@ def check_bundle(bundle: Bundle, config: DeployConfig) -> None:
     _check_sshd(bundle.files["sshd-lockdown.conf"], config.admin_user)
     _check_bootstrap(bundle.files["bootstrap.sh"])
     _check_cloud_init(bundle.user_data, bundle, config)
+    _check_tunnel_secrets(bundle, config)
 
 
 def _compose(config: DeployConfig) -> str:
@@ -358,15 +372,57 @@ def _check_cloud_init(text: str, bundle: Bundle, config: DeployConfig) -> None:
         raise BundleError("cloud-init does not run the bootstrap script")
 
 
+def _check_tunnel_secrets(bundle: Bundle, config: DeployConfig) -> None:
+    hint = bundle.files["connect.txt"]
+    quiet = ("docker-compose.yml", "Caddyfile", "sshd-lockdown.conf", "bootstrap.sh", "connect.txt")
+    for secret in (config.cloudflare_tunnel_token, config.tailscale_auth_key):
+        if not secret:
+            continue
+        if secret in hint:
+            raise BundleError("connect hint contains a tunnel credential")
+        for name in quiet:
+            if secret in bundle.files[name]:
+                raise BundleError(f"{name} contains a tunnel credential")
+    client = bundle.files.get("wireguard-client.conf")
+    if client is None:
+        return
+    client_private = _config_value(client, "PrivateKey")
+    leaked = client_private in bundle.user_data or client_private in hint
+    if leaked or client_private in bundle.files["tunnel-setup.sh"]:
+        raise BundleError("wireguard client private key was copied onto the server")
+    server_private = _config_value(bundle.files["tunnel-setup.sh"], "PrivateKey")
+    if server_private in client or server_private in hint:
+        raise BundleError("wireguard server private key was copied into the client bundle")
+
+
+def _config_value(text: str, key: str) -> str:
+    prefix = f"{key} = "
+    for line in text.splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix) :]
+    raise BundleError(f"missing {key}")
+
+
 def _reject_dangerous_tunnel(script: str) -> None:
     if "\x00" in script:
         raise BundleError("tunnel script contains a NUL byte")
-    for pattern in _DANGEROUS_TUNNEL:
-        if pattern.search(script):
-            raise BundleError(
-                "tunnel script would open public SSH or weaken sshd; "
-                "forward to 127.0.0.1:22 instead"
-            )
+    if _LISTEN_ANYWHERE.search(script) or _PASSWORD_YES.search(script) or _ROOT_LOGIN.search(script):
+        _raise_open_ssh()
+    for raw in script.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if _IPTABLES_22.search(line):
+            _raise_open_ssh()
+        if _UFW_ALLOW.search(line) and _PORT_22.search(line) and _WG_SSH.fullmatch(line) is None:
+            _raise_open_ssh()
+
+
+def _raise_open_ssh() -> None:
+    raise BundleError(
+        "tunnel script would open public SSH or weaken sshd; "
+        "forward to 127.0.0.1:22 or allow SSH only on wg0"
+    )
 
 
 def _ensure_trailing_newline(text: str) -> str:

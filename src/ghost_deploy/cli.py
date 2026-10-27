@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from ghost_deploy.config import load_config
+from ghost_deploy.config import DeployConfig, load_config
 from ghost_deploy.render import BundleError, render_bundle, write_bundle
 
 
@@ -18,18 +18,23 @@ def main(argv: list[str] | None = None) -> int:
     render.add_argument("--env-file", type=Path, default=Path(".env"))
     render.add_argument("--output", type=Path, default=Path("build"))
     render.add_argument(
+        "--tunnel",
+        choices=["none", "cloudflare", "tailscale", "wireguard", "custom"],
+        help="override TUNNEL from the env file",
+    )
+    render.add_argument(
         "--tunnel-script",
         type=Path,
         help="shell script installed on the host to expose 127.0.0.1:22",
     )
     args = parser.parse_args(argv)
     if args.command == "render":
-        return _render(args.env_file, args.output, args.tunnel_script)
+        return _render(args.env_file, args.output, args.tunnel, args.tunnel_script)
     parser.error(f"unknown command {args.command}")
     return 2
 
 
-def _render(env_file: Path, output: Path, tunnel_script: Path | None) -> int:
+def _render(env_file: Path, output: Path, tunnel: str | None, tunnel_script: Path | None) -> int:
     if not env_file.is_file():
         print(f"missing {env_file}. Copy .env.example to .env and fill it in.", file=sys.stderr)
         return 2
@@ -41,6 +46,8 @@ def _render(env_file: Path, output: Path, tunnel_script: Path | None) -> int:
         script = tunnel_script.read_text(encoding="utf-8")
     try:
         config = load_config(env_file)
+        if tunnel is not None:
+            config = DeployConfig.model_validate(config.model_copy(update={"tunnel": tunnel}).model_dump())
         bundle = render_bundle(config, tunnel_script=script)
     except ValidationError as exc:
         print(exc, file=sys.stderr)
@@ -55,4 +62,5 @@ def _render(env_file: Path, output: Path, tunnel_script: Path | None) -> int:
     for name in bundle.files:
         print(output / name)
     print("database passwords are in ghost.env and cloud-init.yaml")
+    print(bundle.files["connect.txt"], end="")
     return 0
