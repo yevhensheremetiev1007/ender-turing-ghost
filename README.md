@@ -1,6 +1,6 @@
 # ghost-deploy
 
-`ghost-deploy render` writes a first-boot bundle for Ghost on Ubuntu 24.04. Cloud-init installs Ghost, MySQL, and Caddy. SSH accepts one public key and listens on `127.0.0.1` only.
+`ghost-deploy deploy` creates a Hetzner Cloud server for Ghost. The firewall is attached in the create call and has no SSH rule. Cloud-init installs Ghost, MySQL, and Caddy. SSH accepts one public key and listens on `127.0.0.1` only.
 
 Set `TUNNEL` to reach that port. Cloudflare and Tailscale make an outbound connection. WireGuard listens on UDP and then allows SSH only on `wg0`. A custom script can do the same job via `--tunnel-script`. The script runs as root after the host firewall is enabled.
 
@@ -25,7 +25,7 @@ ghost-deploy render --tunnel wireguard --output build
 ghost-deploy render --tunnel-script ./tunnel.sh --output build
 ```
 
-`build/cloud-init.yaml` is the file to paste as Hetzner Cloud user data on an Ubuntu 24.04 server. The same directory contains the compose file, the Caddyfile, `ghost.env`, and `connect.txt`. Tunnel credentials and database passwords are inside `cloud-init.yaml`. The directory is gitignored.
+`build/cloud-init.yaml` is the user data `deploy` sends to Hetzner. The same directory contains the compose file, the Caddyfile, `ghost.env`, and `connect.txt`. Tunnel credentials and database passwords are inside `cloud-init.yaml`. The API token stays in the environment. The directory is gitignored.
 
 `connect.txt` is the command that reaches the host. For WireGuard it also points at `wireguard-client.conf`, which stays on your machine. The server only receives the client public key.
 
@@ -38,9 +38,21 @@ ghost-deploy render --tunnel-script ./tunnel.sh --output build
 | `wireguard` | optional `WIREGUARD_ENDPOINT` | import `wireguard-client.conf`, then `ssh <admin>@10.66.0.1` |
 | custom | `--tunnel-script` | whatever that script exposes, aimed at `127.0.0.1:22` |
 
-Cloudflare and Tailscale open no extra inbound ports. WireGuard needs UDP `51820` (or the port in `WIREGUARD_ENDPOINT`) allowed in the Hetzner firewall. `build/tunnel-ports.txt` lists those ports. The host rule is already in the tunnel script, and SSH on WireGuard is limited to the `wg0` interface.
+Cloudflare and Tailscale open no extra inbound ports. WireGuard needs UDP `51820` (or the port in `WIREGUARD_ENDPOINT`). `deploy` adds that port from `tunnel-ports.txt`. SSH on WireGuard is limited to the `wg0` interface.
 
-Point the domain at the server, then open `https://<domain>/ghost` and create the owner account.
+## Deploy
+
+```bash
+ghost-deploy deploy
+ghost-deploy verify
+ghost-deploy destroy
+```
+
+`deploy` creates the firewall, then an Ubuntu 24.04 server that already uses it. The default server is `cx23` in `fsn1`. A second run sees the existing server and does not create another one. The command prints the IPv4 address and the tunnel command from `connect.txt`.
+
+Point an A record at that address, wait until cloud-init finishes, then run `verify`. It checks that the firewall has no SSH rule, that port 22 does not accept a connection from this machine, and that ports 80 and 443 do. Open `https://<domain>/ghost` and create the owner account.
+
+`destroy` deletes that server and then its firewall.
 
 ## What the host exposes
 

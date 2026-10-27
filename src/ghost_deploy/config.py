@@ -25,6 +25,10 @@ _LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _ENDPOINT = re.compile(
     r"(?:(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}|\d{1,3}(?:\.\d{1,3}){3}):([1-9]\d{0,4})$"
 )
+_HCLOUD_TYPE = re.compile(r"[a-z0-9]{2,32}")
+_HCLOUD_IMAGE = re.compile(r"[a-z0-9][a-z0-9.-]{1,63}")
+_HCLOUD_LOCATION = re.compile(r"[a-z][a-z0-9-]{1,19}")
+_HCLOUD_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
 
 class DeployConfig(BaseSettings):
@@ -50,6 +54,11 @@ class DeployConfig(BaseSettings):
     tailscale_auth_key: str = ""
     tailscale_hostname: str = ""
     wireguard_endpoint: str = ""
+    hetzner_api_token: str = ""
+    hetzner_server_type: str = "cx23"
+    hetzner_image: str = "ubuntu-24.04"
+    hetzner_location: str = "fsn1"
+    hetzner_name: str = ""
 
     @field_validator("domain")
     @classmethod
@@ -147,6 +156,44 @@ class DeployConfig(BaseSettings):
         match = _ENDPOINT.fullmatch(value)
         if match is None or not 1 <= int(match.group(1)) <= 65535:
             raise ValueError("WIREGUARD_ENDPOINT must look like blog.example.com:51820")
+        return value
+
+    @field_validator("hetzner_api_token")
+    @classmethod
+    def check_hetzner_token(cls, value: str) -> str:
+        value = value.strip()
+        if any(character.isspace() or ord(character) < 32 for character in value):
+            raise ValueError("HETZNER_API_TOKEN must be a single line")
+        return value
+
+    @field_validator("hetzner_server_type")
+    @classmethod
+    def check_server_type(cls, value: str) -> str:
+        if not _HCLOUD_TYPE.fullmatch(value):
+            raise ValueError("HETZNER_SERVER_TYPE must look like cx23")
+        return value
+
+    @field_validator("hetzner_image")
+    @classmethod
+    def check_hetzner_image(cls, value: str) -> str:
+        if not _HCLOUD_IMAGE.fullmatch(value):
+            raise ValueError("HETZNER_IMAGE must look like ubuntu-24.04")
+        return value
+
+    @field_validator("hetzner_location")
+    @classmethod
+    def check_location(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not _HCLOUD_LOCATION.fullmatch(value):
+            raise ValueError("HETZNER_LOCATION must look like fsn1")
+        return value
+
+    @field_validator("hetzner_name")
+    @classmethod
+    def check_hetzner_name(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value and not _HCLOUD_NAME.fullmatch(value):
+            raise ValueError("HETZNER_NAME must be a hostname label of at most 63 characters")
         return value
 
     @model_validator(mode="after")

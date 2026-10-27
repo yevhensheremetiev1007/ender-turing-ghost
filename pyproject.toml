@@ -1,7 +1,7 @@
 [project]
 name = "ghost-deploy"
 version = "0.1.0"
-description = "Render a locked-down first-boot bundle for Ghost on Ubuntu."
+description = "Deploy Ghost on Hetzner with SSH reachable only through a tunnel."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
